@@ -1,0 +1,663 @@
+---
+title: "BF528: scRNAseq Final Project"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(tidyverse)
+library(devtools)
+library(DoubletFinder)
+library(presto)
+library(harmony)
+library(SingleR)
+library(celldex)
+library(ggrepel)
+library(patchwork)
+```
+
+```{r}
+# reading in sample files
+
+HB17_background_unfilt <- Read10X(data.dir = 'HB17_background')
+HB17_background_unfilt <- CreateSeuratObject(counts = HB17_background_unfilt, project = "HB17_background", min.cells = 3, min.features = 200)
+
+HB53_background_unfilt <- Read10X(data.dir = 'HB53_background')
+HB53_background_unfilt <- CreateSeuratObject(counts = HB53_background_unfilt, project = "HB53_background", min.cells = 3, min.features = 200)
+
+HB17_PDX_unfilt <- Read10X(data.dir = 'HB17_PDX')
+HB17_PDX_unfilt <- CreateSeuratObject(counts = HB17_PDX_unfilt, project = "HB17_PDX", min.cells = 3, min.features = 200)
+
+HB30_PDX_unfilt <- Read10X(data.dir = 'HB30_PDX')
+HB30_PDX_unfilt <- CreateSeuratObject(counts = HB30_PDX_unfilt, project = "HB30_PDX", min.cells = 3, min.features = 200)
+
+HB17_tumor_unfilt <- Read10X(data.dir = 'HB17_tumor')
+HB17_tumor_unfilt <- CreateSeuratObject(counts = HB17_tumor_unfilt, project = "HB17_tumor", min.cells = 3, min.features = 200)
+
+HB30_tumor_unfilt <- Read10X(data.dir = 'HB30_tumor')
+HB30_tumor_unfilt <- CreateSeuratObject(counts = HB30_tumor_unfilt, project = "HB30_tumor", min.cells = 3, min.features = 200)
+
+HB53_tumor_unfilt <- Read10X(data.dir = 'HB53_tumor')
+HB53_tumor_unfilt <- CreateSeuratObject(counts = HB53_tumor_unfilt, project = "HB53_tumor", min.cells = 3, min.features = 200)
+```
+
+
+```{r}
+# determine number of MT genes in each sample
+
+HB17_background_unfilt[["percent.mt"]] <- PercentageFeatureSet(HB17_background_unfilt, pattern = "^MT-")
+HB53_background_unfilt[["percent.mt"]] <- PercentageFeatureSet(HB53_background_unfilt, pattern = "^MT-")
+
+HB17_PDX_unfilt[["percent.mt"]] <- PercentageFeatureSet(HB17_PDX_unfilt, pattern = "^MT-")
+HB30_PDX_unfilt[["percent.mt"]] <- PercentageFeatureSet(HB30_PDX_unfilt, pattern = "^MT-")
+
+HB17_tumor_unfilt[["percent.mt"]] <- PercentageFeatureSet(HB17_tumor_unfilt, pattern = "^MT-")
+HB30_tumor_unfilt[["percent.mt"]] <- PercentageFeatureSet(HB30_tumor_unfilt, pattern = "^MT-")
+HB53_tumor_unfilt[["percent.mt"]] <- PercentageFeatureSet(HB53_tumor_unfilt, pattern = "^MT-")
+
+# features =  genes
+# counts = the number of transcripts (or UMIs) detected for each feature (gene) within a cell
+```
+
+```{r}
+# cells with fewer than 500 expressed genes or 800 UMIs, or greater than 10% mitochondrial counts were removed (subset samples with over 500 features, over 800 counts, and mt percent less than 10%)
+
+HB17_background <- subset(HB17_background_unfilt, subset = nFeature_RNA > 500 & nCount_RNA > 800 & percent.mt < 10)
+HB53_background <- subset(HB53_background_unfilt, subset = nFeature_RNA > 500 & nCount_RNA > 800 & percent.mt < 10)
+
+HB17_PDX <- subset(HB17_PDX_unfilt, subset = nFeature_RNA > 500 & nCount_RNA > 800 & percent.mt < 10)
+HB30_PDX <- subset(HB30_PDX_unfilt, subset = nFeature_RNA > 500 & nCount_RNA > 800 & percent.mt < 10)
+
+HB17_tumor <- subset(HB17_tumor_unfilt, subset = nFeature_RNA > 500 & nCount_RNA > 800 & percent.mt < 10)
+HB30_tumor <- subset(HB30_tumor_unfilt, subset = nFeature_RNA > 500 & nCount_RNA > 800 & percent.mt < 10)
+HB53_tumor <- subset(HB53_tumor_unfilt, subset = nFeature_RNA > 500 & nCount_RNA > 800 & percent.mt < 10)
+```
+
+```{r}
+# create a plot or plots that contain at minimum information on the number of unique genes detected per barcode, the total number of molecules per barcode, and the percentage of reads that map to the mitochondrial genome
+
+VlnPlot(HB17_background, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(HB53_background, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(HB17_PDX, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(HB30_PDX, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(HB17_tumor, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(HB30_tumor, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(HB53_tumor, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+``` {r}
+# doublet detection on HB17_background
+
+HB17_background <- NormalizeData(HB17_background)
+HB17_background <- FindVariableFeatures(HB17_background)
+HB17_background <- ScaleData(HB17_background)
+HB17_background <- RunPCA(HB17_background)
+HB17_background <- FindNeighbors(HB17_background, dims = 1:10, reduction = "pca")
+HB17_background <- FindClusters(HB17_background, resolution = 1, cluster.name = "unintegrated_clusters")
+HB17_background <- RunUMAP(HB17_background, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+sweep.res.list <- paramSweep(HB17_background, PCs = 1:10, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)(
+# pick optimal pK
+optimal_pK <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+# estimate expected number of doublets
+nCells <- ncol(HB17_background)
+doublet_rate <- 0.01 
+n_exp <- round(nCells * doublet_rate)
+# run DoubletFinder with optimal parameters
+HB17_background <- doubletFinder(HB17_background, PCs = 1:10, pN = 0.25, pK = optimal_pK, nExp = n_exp, sct = FALSE)
+# subset to only singlets in DF.classification column
+colnames(HB17_background@meta.data)
+DimPlot(HB17_background, reduction = "umap.unintegrated", group.by = "DF.classifications_0.25_0.01_17")
+table(HB17_background@meta.data$DF.classifications_0.25_0.01_17)
+HB17_background <- subset(HB17_background, subset = DF.classifications_0.25_0.01_17 == "Singlet")
+```
+
+``` {r}
+# doublet detection on HB53_background
+
+HB53_background <- NormalizeData(HB53_background)
+HB53_background <- FindVariableFeatures(HB53_background)
+HB53_background <- ScaleData(HB53_background)
+HB53_background <- RunPCA(HB53_background)
+HB53_background <- FindNeighbors(HB53_background, dims = 1:10, reduction = "pca")
+HB53_background <- FindClusters(HB53_background, resolution = 1, cluster.name = "unintegrated_clusters")
+HB53_background <- RunUMAP(HB53_background, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+sweep.res.list <- paramSweep(HB53_background, PCs = 1:10, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+
+# pick optimal pK
+optimal_pK <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+# estimate expected number of doublets
+nCells <- ncol(HB53_background)
+doublet_rate <- 0.01 
+n_exp <- round(nCells * doublet_rate)
+# Run DoubletFinder with optimal parameters
+HB53_background <- doubletFinder(HB53_background, PCs = 1:10, pN = 0.25, pK = optimal_pK, nExp = n_exp, sct = FALSE)
+# subset to only singlets in DF.classification column
+colnames(HB53_background@meta.data)
+DimPlot(HB53_background, reduction = "umap.unintegrated", group.by = "DF.classifications_0.25_0.01_484")
+table(HB53_background@meta.data$DF.classifications_0.25_0.01_484)
+HB53_background <- subset(HB53_background, subset = DF.classifications_0.25_0.01_484 == "Singlet")
+```
+
+``` {r}
+# doublet detection on HB17_PDX
+
+HB17_PDX <- NormalizeData(HB17_PDX)
+HB17_PDX <- FindVariableFeatures(HB17_PDX)
+HB17_PDX <- ScaleData(HB17_PDX)
+HB17_PDX <- RunPCA(HB17_PDX)
+HB17_PDX <- FindNeighbors(HB17_PDX, dims = 1:10, reduction = "pca")
+HB17_PDX <- FindClusters(HB17_PDX, resolution = 1, cluster.name = "unintegrated_clusters")
+HB17_PDX <- RunUMAP(HB17_PDX, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+sweep.res.list <- paramSweep(HB17_PDX, PCs = 1:10, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+
+# pick optimal pK
+optimal_pK <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+# estimate expected number of doublets
+nCells <- ncol(HB17_PDX)
+doublet_rate <- 0.01 
+n_exp <- round(nCells * doublet_rate)
+# run DoubletFinder with optimal parameters
+HB17_PDX <- doubletFinder(HB17_PDX, PCs = 1:10, pN = 0.25, pK = optimal_pK, nExp = n_exp, sct = FALSE)
+# subset to only singlets in DF.classification column
+colnames(HB17_PDX@meta.data)
+DimPlot(HB17_PDX, reduction = "umap.unintegrated", group.by = "DF.classifications_0.25_0.005_677")
+table(HB17_PDX@meta.data$DF.classifications_0.25_0.005_677)
+HB17_PDX <- subset(HB17_PDX, subset = DF.classifications_0.25_0.005_677 == "Singlet")
+```
+
+``` {r}
+# doublet detection on HB30_PDX
+
+HB30_PDX <- NormalizeData(HB30_PDX)
+HB30_PDX <- FindVariableFeatures(HB30_PDX)
+HB30_PDX <- ScaleData(HB30_PDX)
+HB30_PDX <- RunPCA(HB30_PDX)
+HB30_PDX <- FindNeighbors(HB30_PDX, dims = 1:10, reduction = "pca")
+HB30_PDX <- FindClusters(HB30_PDX, resolution = 1, cluster.name = "unintegrated_clusters")
+HB30_PDX <- RunUMAP(HB30_PDX, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+sweep.res.list <- paramSweep(HB30_PDX, PCs = 1:10, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+
+# pick optimal pK 
+optimal_pK <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+# estimate expected number of doublets
+nCells <- ncol(HB30_PDX)
+doublet_rate <- 0.01 
+n_exp <- round(nCells * doublet_rate)
+# run DoubletFinder with optimal parameters
+HB30_PDX <- doubletFinder(HB30_PDX, PCs = 1:10, pN = 0.25, pK = optimal_pK, nExp = n_exp, sct = FALSE)
+# subset to only singlets in DF.classification column
+colnames(HB30_PDX@meta.data)
+DimPlot(HB30_PDX, reduction = "umap.unintegrated", group.by = "DF.classifications_0.25_0.13_232")
+table(HB30_PDX@meta.data$DF.classifications_0.25_0.13_232)
+HB30_PDX <- subset(HB30_PDX, subset = DF.classifications_0.25_0.13_232 == "Singlet")
+```
+
+``` {r}
+# doublet detection on HB17_tumor
+
+HB17_tumor <- NormalizeData(HB17_tumor)
+HB17_tumor <- FindVariableFeatures(HB17_tumor)
+HB17_tumor <- ScaleData(HB17_tumor)
+HB17_tumor <- RunPCA(HB17_tumor)
+HB17_tumor <- FindNeighbors(HB17_tumor, dims = 1:10, reduction = "pca")
+HB17_tumor <- FindClusters(HB17_tumor, resolution = 1, cluster.name = "unintegrated_clusters")
+HB17_tumor <- RunUMAP(HB17_tumor, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+sweep.res.list <- paramSweep(HB17_tumor, PCs = 1:10, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+
+# pick optimal pK (you can look at bcmvn to choose, or just pick top one)
+optimal_pK <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+# estimate expected number of doublets
+nCells <- ncol(HB17_tumor)
+doublet_rate <- 0.01 
+n_exp <- round(nCells * doublet_rate)
+# run DoubletFinder with optimal parameters
+HB17_tumor <- doubletFinder(HB17_tumor, PCs = 1:10, pN = 0.25, pK = optimal_pK, nExp = n_exp, sct = FALSE)
+# subset to only singlets in DF.classification column
+colnames(HB17_tumor@meta.data)
+DimPlot(HB17_tumor, reduction = "umap.unintegrated", group.by = "DF.classifications_0.25_0.01_679")
+table(HB17_tumor@meta.data$DF.classifications_0.25_0.01_679)
+HB17_tumor <- subset(HB17_tumor, subset = DF.classifications_0.25_0.01_679 == "Singlet")
+```
+
+``` {r}
+# doublet detection on HB30_tumor
+
+HB30_tumor <- NormalizeData(HB30_tumor)
+HB30_tumor <- FindVariableFeatures(HB30_tumor)
+HB30_tumor <- ScaleData(HB30_tumor)
+HB30_tumor <- RunPCA(HB30_tumor)
+HB30_tumor <- FindNeighbors(HB30_tumor, dims = 1:10, reduction = "pca")
+HB30_tumor <- FindClusters(HB30_tumor, resolution = 1, cluster.name = "unintegrated_clusters")
+HB30_tumor <- RunUMAP(HB30_tumor, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+sweep.res.list <- paramSweep(HB30_tumor, PCs = 1:10, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+
+# pick optimal pK (you can look at bcmvn to choose, or just pick top one)
+optimal_pK <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+# estimate expected number of doublets
+nCells <- ncol(HB30_tumor)
+doublet_rate <- 0.01 
+n_exp <- round(nCells * doublet_rate)
+# run DoubletFinder with optimal parameters
+HB30_tumor <- doubletFinder(HB30_tumor, PCs = 1:10, pN = 0.25, pK = optimal_pK, nExp = n_exp, sct = FALSE)
+# subset to only singlets in DF.classification column
+colnames(HB30_tumor@meta.data)
+DimPlot(HB30_tumor, reduction = "umap.unintegrated", group.by = "DF.classifications_0.25_0.3_290")
+table(HB30_tumor@meta.data$DF.classifications_0.25_0.3_290)
+HB30_tumor <- subset(HB30_tumor, subset = DF.classifications_0.25_0.3_290 == "Singlet")
+```
+
+``` {r}
+# doublet detection on HB53_tumor
+
+HB53_tumor <- NormalizeData(HB53_tumor)
+HB53_tumor <- FindVariableFeatures(HB53_tumor)
+HB53_tumor <- ScaleData(HB53_tumor)
+HB53_tumor <- RunPCA(HB53_tumor)
+HB53_tumor <- FindNeighbors(HB53_tumor, dims = 1:10, reduction = "pca")
+HB53_tumor <- FindClusters(HB53_tumor, resolution = 1, cluster.name = "unintegrated_clusters")
+HB53_tumor <- RunUMAP(HB53_tumor, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+sweep.res.list <- paramSweep(HB53_tumor, PCs = 1:10, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+
+# pick optimal pK
+optimal_pK <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
+# estimate expected number of doublets
+nCells <- ncol(HB53_tumor)
+doublet_rate <- 0.01 
+n_exp <- round(nCells * doublet_rate)
+# run DoubletFinder with optimal parameters
+HB53_tumor <- doubletFinder(HB53_tumor, PCs = 1:10, pN = 0.25, pK = optimal_pK, nExp = n_exp, sct = FALSE)
+# subset to only singlets in DF.classification column
+colnames(HB53_tumor@meta.data)
+DimPlot(HB53_tumor, reduction = "umap.unintegrated", group.by = "DF.classifications_0.25_0.2_281")
+table(HB53_tumor@meta.data$DF.classifications_0.25_0.2_281)
+HB53_tumor_clean <- subset(HB53_tumor, subset = DF.classifications_0.25_0.2_281 == "Singlet")
+```
+
+```{r}
+# table that displays how many cells / genes are present in your dataset before and after your filtering thresholds are implemented
+
+# define sample names
+sample_names <- c("HB17_background", "HB53_background", "HB17_PDX", "HB30_PDX", "HB17_tumor", "HB30_tumor", "HB53_tumor")
+
+# initialize empty dataframe
+cell_counts <- data.frame(
+  Sample = character(),
+  Genes_Unfiltered = integer(),
+  Genes_Filtered = integer(),
+  stringsAsFactors = FALSE
+)
+
+# loop through each sample and collect cell counts
+for (sample in sample_names) {
+  unfilt_obj <- get(paste0(sample, "_unfilt"))
+  filt_obj <- get(sample)
+
+  n_cells_unfilt <- ncol(unfilt_obj)
+  n_cells_filt <- ncol(filt_obj)
+
+  cell_counts <- rbind(cell_counts, data.frame(
+    Sample = sample,
+    Unfiltered_Cells = n_cells_unfilt,
+    Filtered_Cells = n_cells_filt
+  ))
+}
+print(cell_counts)
+```
+
+```{r}
+# merging cleaned samples
+merged_samples <- merge(HB17_background, y = c(HB53_background, HB17_PDX, HB30_PDX, HB17_tumor, HB30_tumor, HB53_tumor), add.cell.ids = c("HB17_background", "HB53_background", "HB17_PDX", "HB30_PDX", "HB17_tumor", "HB30_tumor", "HB53_tumor"), project = "all")
+
+# save merged samples -> this was used as a checkpoint throughout the workflow for when RStudio crashed and cleared environment
+# save(merged_samples, file = "filtered_merged_samples.RData")
+```
+
+
+```{r}
+# an integrated plot that visualizes the number of unique genes detected per barcode, the total number of molecules per barcode, and the percentage of reads that map to the mitochondrial genome jointly for each sample
+VlnPlot(merged_samples, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3, 
+        group.by = "orig.ident")
+```
+
+```{r}
+# normalize merged samples
+merged_samples <- NormalizeData(merged_samples, normalization.method = "LogNormalize")
+```
+
+```{r}
+# feature selection
+merged_samples <- FindVariableFeatures(merged_samples, selection.method = "vst")
+
+# Include a brief statement on how many genes meet your chosen threshold to be considered highly variable and how many are not considered.
+total_genes <- nrow(merged_samples)
+num_hvg <- length(VariableFeatures(merged_samples))
+num_nonhvg <- total_genes - num_hvg
+cat("Out of", total_genes, "genes,",
+    num_hvg, "were identified as highly variable using the 'vst' method,",
+    "while", num_nonhvg, "were not considered highly variable.\n")
+```
+
+```{r}
+# create a plot of the highly variable features by your chosen metric
+VariableFeaturePlot(merged_samples)
+```
+
+```{r}
+# PCA of highly variable features
+merged_samples <- ScaleData(merged_samples)
+merged_samples <- RunPCA(merged_samples)
+```
+
+```{r}
+#Create a plot that justifies your choice of how many PCs to utilize in downstream analyses
+ElbowPlot(merged_samples, ndims = 50)
+```
+
+```{r}
+# clustering and UMAP
+merged_samples <- RunUMAP(merged_samples, dims = 1:20, reduction = "pca", reduction.name = "umap.unintegrated")
+merged_samples <- FindNeighbors(merged_samples, dims = 1:20)
+merged_samples <- FindClusters(merged_samples, resolution = 0.25)
+
+DimPlot(merged_samples, reduction = "umap.unintegrated", label = TRUE, pt.size = 0.5) + 
+  ggtitle("UMAP of Clusters")
+```
+
+```{r}
+# assign "type" and sample to data to color by in UMAP plot
+merged_samples[['type']] <- merged_samples[['orig.ident']] %>%
+  mutate(orig.ident = case_when(
+    grepl("_background$", orig.ident) ~ "background",
+    grepl("_tumor$", orig.ident) ~ "tumor",
+    grepl("_PDX$", orig.ident) ~ "PDX",
+    TRUE ~ "Other" 
+  ))
+
+merged_samples[['sample']] <- merged_samples[['orig.ident']] %>%
+  mutate(orig.ident = case_when(
+    grepl("^HB17", orig.ident) ~ "HB17",
+    grepl("^HB30", orig.ident) ~ "HB30",
+    grepl("^HB53", orig.ident) ~ "HB53",
+    TRUE ~ "Other" 
+  ))
+
+DimPlot(merged_samples, reduction = "umap", group.by = c("type"))
+DimPlot(merged_samples, reduction = "umap", group.by = c("sample"))
+```
+
+```{r}
+# number of cells per sample
+table(merged_samples$orig.ident)
+# total number of cells
+length(colnames(merged_samples))
+```
+
+``` {r}
+# integration
+merged_samples <- IntegrateLayers(
+  object = merged_samples, method = HarmonyIntegration,
+  orig.reduction = "pca", new.reduction = "harmony",
+  verbose = FALSE
+)
+```
+
+```{r}
+#Create a plot visualizing the clustering results of your cells after integration with sample labels
+
+merged_samples <- FindNeighbors(merged_samples, reduction = "harmony", dims = 1:20)
+merged_samples <- FindClusters(merged_samples, resolution = 1, cluster.name = "harmony_clusters")
+
+merged_samples <- RunUMAP(merged_samples, reduction = "harmony", dims = 1:20, reduction.name = "umap.harmony")
+
+DimPlot(merged_samples, reduction = "umap.harmony", group.by = c("type"))
+DimPlot(merged_samples, reduction = "umap.harmony", group.by = c("sample"))
+DimPlot(merged_samples, reduction = "umap.harmony", group.by = c("harmony_clusters"))
+```
+
+```{r}
+# saving integrated data checkpoint
+# save(merged_samples, file = "integrated_samples.RData")
+# load("integrated_samples.RData")
+```
+
+```{r}
+# marker gene analysis
+joined_samples <- JoinLayers(merged_samples)
+Idents(joined_samples) <- "harmony_clusters"
+all_markers <- FindAllMarkers(
+  joined_samples,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25
+)
+```
+```{r}
+# save(all_markers, file = "all_markers.RData")
+```
+
+```{r}
+# Create a table listing the top five marker genes for each of your clusters
+top5_markers <- all_markers %>%
+  group_by(cluster) %>%
+  top_n(n = 5, wt = avg_log2FC)
+
+print(top5_markers)
+```
+
+```{r}
+# Automatic Annotation of Cell labels
+
+ref <- celldex::HumanPrimaryCellAtlasData()
+# View(as.data.frame(ref@colData))
+
+sample_counts <- GetAssayData(joined_samples, slot = 'counts')
+pred <- SingleR(test = sample_counts, ref = ref, labels = ref$label.main)
+joined_samples$SingleR_labels <- pred$labels[match(rownames(joined_samples@meta.data), rownames(pred))]
+
+# saving annotated samples checkpoint
+# save(joined_samples, file = "annotated_samples.RData")
+```
+
+```{r}
+# Create a visualization of your cell clustering with the labels assigned by the results of SingleR
+DimPlot(joined_samples, reduction = "umap.harmony", group.by = "SingleR_labels", label = TRUE)
+```
+
+```{r}
+# Manual Cluster Labeling
+
+# reformatted table to view list of top 5 genes per cluster
+top5_table <- top5_markers %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC)) %>%
+  slice_head(n = 5) %>%
+  summarise(top_genes = paste(gene, collapse = ", ")) %>%
+  ungroup()
+
+# which clusters have the most cells?
+cluster_counts <- as.data.frame(table(Idents(joined_samples)))
+colnames(cluster_counts) <- c("cluster", "cell_count")
+cluster_counts
+
+top5_table$cluster <- as.character(top5_table$cluster)
+
+top5_ordered <- top5_table %>%
+  left_join(cluster_counts, by = "cluster") %>%
+  arrange(desc(cell_count)) %>%
+  select(cluster, top_genes)
+
+# after cellxgene search, add column with manual annotations for top 10 clusters
+
+manual_annotations <- c(
+  "0" = "endothelial stalk cell",
+  "1" = "myofibroblast cell",
+  "2" = "hepatoblast",
+  "3" = "hepatocyte",
+  "4" = "stem cell / hepatoblast",
+  "5" = "efferent neuron",
+  "6" = "erythroblast",
+  "7" = "small pre-B-II cell",
+  "8" = "antibody secreting cell",
+  "9" = "granulocyte / neutrophil"
+)
+top5_ordered$manual_annotation <- manual_annotations[top5_ordered$cluster]
+top5_ordered
+```
+
+```{r}
+# Create a single plot / figure that displays the top marker genes for every cluster in your dataset. This plot may be in any style (a heatmap, a tracksplot, violin plot, etc.)
+top_markers <- all_markers %>%
+  group_by(cluster) %>%
+  slice_max(order_by = avg_log2FC, n = 5) %>%
+  ungroup()
+top_genes <- unique(top_markers$gene)
+
+DotPlot(joined_samples, features = top_genes, group.by = "harmony_clusters") +
+  RotatedAxis() +
+  ggtitle("Top Marker Genes per Cluster") +
+  theme(axis.text.y = element_text(size = 2))
+```
+
+```{r}
+# For the top three clusters with the most cells, create individual plots of at least 5 of top genes 
+colnames(cluster_counts) <- c("cluster", "cell_count")
+
+top3_clusters <- cluster_counts %>%
+  arrange(desc(cell_count)) %>%
+  slice_head(n = 3) %>%
+  pull(cluster)
+
+top5_per_top3 <- top_markers %>%
+  filter(cluster %in% top3_clusters) %>%
+  group_by(cluster) %>%
+  arrange(desc(avg_log2FC)) %>%
+  slice_head(n = 5) %>%
+  ungroup()
+
+for (clust in unique(top5_per_top3$cluster)) {
+  genes <- top5_per_top3 %>%
+    filter(cluster == clust) %>%
+    pull(gene)
+
+  p <- DotPlot(joined_samples, features = genes, group.by = "harmony_clusters") +
+    RotatedAxis() +
+    labs(title = paste("Top 5 Marker Genes - Cluster", clust))
+
+  print(p)
+}
+```
+
+```{r}
+# Create a visualization / plot of your clusters with your manual annotations and labels of cell identities.
+
+manual_annotation_vector <- manual_annotations[as.character(joined_samples$harmony_clusters)]
+names(manual_annotation_vector) <- NULL
+joined_samples$manual_annotation <- manual_annotation_vector
+DimPlot(joined_samples, group.by = "manual_annotation", reduction = "umap.harmony", label = TRUE, repel = TRUE)
+```
+
+Manual annotations were assigned to the top 10 clusters using CellxGene (https://cellxgene.cziscience.com/gene-expression), where the top 5 genes in each cluster were input and sorted based on liver tissue.
+
+```{r}
+# first recreation of paper finding : UMAP for marker genes in liver and tumor
+marker_genes <- c("GPC3", "COL6A3", "FLT1", "CYP3A4", "CD163", "PTPRC")
+
+# apply to each gene in marker genes
+feature_plots <- lapply(marker_genes, function(gene) {
+  FeaturePlot(joined_samples,
+              features = gene,
+              reduction = "umap.harmony",
+              max.cutoff = "q70",
+              cols = c("yellow", "blue"),
+              pt.size = 0.2) +
+    ggtitle(gene) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      legend.title = element_blank(),
+      legend.key.height = unit(0.6, "cm"),
+      plot.title = element_text(face = "bold", hjust = 0.5, size = 14)
+    )
+})
+
+# combine and save plots -> figure 3b
+combined_plot <- wrap_plots(feature_plots, ncol = 2)
+ggsave("combined_marker_genes_plot.png", plot = combined_plot, width = 8, height = 10)
+knitr::include_graphics("combined_marker_genes_plot.png")
+```
+
+```{r}
+# second recreation of paper finding : Transcriptional profile correlation evaluation
+
+# log normalize on joined samples
+joined_samples <- NormalizeData(
+  joined_samples,
+  normalization.method = "LogNormalize",
+  layer.name = "lognorm"
+)
+
+expression <- GetAssayData(joined_samples, slot = "data")
+metadata <- joined_samples@meta.data
+
+tumor_cells <- colnames(joined_samples)[metadata$type == "tumor"]
+hep_cells <- colnames(joined_samples)[metadata$type == "background"]
+pdx_cells <- colnames(joined_samples)[metadata$type == "PDX"]
+
+# use average expression of matching genes
+tumor_avg <- rowMeans(expression[, tumor_cells])
+hep_avg <- rowMeans(expression[, hep_cells])
+pdx_avg <- rowMeans(expression[, pdx_cells])
+common_genes <- intersect(names(tumor_avg), names(hep_avg), names(pdx_avg))
+tumor_avg <- tumor_avg[common_genes]
+hep_avg   <- hep_avg[common_genes]
+pdx_avg <- pdx_avg[common_genes]
+common_genes
+
+# mean normalize average expression per gene
+tumor_norm <- tumor_avg - mean(tumor_avg, na.rm = TRUE)
+hep_norm <- hep_avg - mean(hep_avg, na.rm = TRUE)
+pdx_norm <- pdx_avg - mean(pdx_avg, na.rm = TRUE)
+
+# run linear regression for each pair
+tumor_vs_hep <- lm(tumor_norm ~ hep_norm)
+pdx_vs_hep <- lm(pdx_norm ~ hep_norm)
+tumor_vs_pdx <- lm(tumor_norm ~ pdx_norm)
+
+# recreating figure 4a
+# plotting correlation of each linear regression
+plot(hep_norm, tumor_norm, pch = 20,
+     xlab = "Background-Hepatocyte",
+     ylab = "Tumor",
+     main = paste("R² =", round(summary(tumor_vs_hep)$r.squared, 3)))
+abline(model, col = "red", lwd = 2)
+
+plot(hep_norm, pdx_norm, pch = 20,
+     xlab = "Background-Hepatocyte",
+     ylab = "PDX",
+     main = paste("R² =", round(summary(pdx_vs_hep)$r.squared, 3)))
+abline(model, col = "red", lwd = 2)
+
+plot(tumor_norm, pdx_norm, pch = 20,
+     xlab = "Tumor",
+     ylab = "PDX",
+     main = paste("R² =", round(summary(tumor_vs_pdx)$r.squared, 3)))
+abline(model, col = "red", lwd = 2)
+```
